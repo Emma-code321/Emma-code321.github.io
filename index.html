@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>德州扑克 - 联机对战</title>
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Arial',sans-serif; }
+        body { background-color:#0b6623; color:white; min-height:100vh; padding:20px; }
+        h1 { text-align:center; margin-bottom:30px; text-shadow:2px 2px 4px rgba(0,0,0,0.5); }
+        .game-container { max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+        .player-area { background-color:rgba(0,0,0,0.3); padding:20px; border-radius:10px; display:flex; flex-direction:column; gap:15px; }
+        #player1 { order:1; }
+        #dealer { order:2; align-items:center; background-color:rgba(0,0,0,0.2); }
+        #player2 { order:3; }
+        .player-info { display:flex; justify-content:space-between; align-items:center; }
+        .cards { display:flex; gap:10px; flex-wrap:wrap; }
+        .card { width:60px; height:85px; background-color:white; border-radius:5px; color:black; display:flex; flex-direction:column; justify-content:space-between; padding:5px; box-shadow:0 2px 5px rgba(0,0,0,0.3); position:relative; }
+        .card.back { background:linear-gradient(135deg, #b30000 0%, #660000 100%); border:3px solid gold; }
+        .card .rank { font-size:16px; font-weight:bold; }
+        .card .suit { font-size:20px; text-align:center; }
+        .card .rank.bottom { align-self:flex-end; transform:rotate(180deg); }
+        .controls { display:flex; gap:10px; justify-content:center; margin-top:20px; }
+        button { padding:10px 20px; border:none; border-radius:5px; background-color:#8b4513; color:white; font-size:16px; cursor:pointer; transition:background-color 0.3s; }
+        button:hover { background-color:#a0522d; }
+        button:disabled { background-color:#555; cursor:not-allowed; }
+        .pot-area { text-align:center; margin:10px 0; font-size:18px; }
+        .status { text-align:center; font-size:20px; margin:10px 0; min-height:24px; }
+        .bet-controls { display:flex; gap:10px; align-items:center; }
+        .bet-amount { width:60px; padding:5px; text-align:center; font-size:16px; }
+    </style>
+</head>
+<body>
+    <h1>德州扑克 - 联机对战</h1>
+    
+    <div class="game-container">
+        <div class="player-area" id="player1">
+            <div class="player-info">
+                <h2>玩家1</h2>
+                <div>筹码: <span id="player1-chips">1000</span></div>
+                <div>本轮下注: <span id="player1-bet">0</span></div>
+            </div>
+            <div class="cards" id="player1-cards"></div>
+            <div class="bet-controls" id="player1-controls">
+                <button id="fold1">弃牌</button>
+                <button id="check1">过牌</button>
+                <button id="bet1">下注</button>
+                <input type="number" id="bet-amount1" class="bet-amount" min="1" max="1000" value="10">
+            </div>
+        </div>
+        
+        <div class="player-area" id="dealer">
+            <div class="pot-area">
+                底池: <span id="pot">0</span>
+            </div>
+            <div class="status" id="status">连接服务器中...</div>
+            <h3>公共牌</h3>
+            <div class="cards" id="community-cards"></div>
+            <div class="controls">
+                <button id="start-game" style="display:none;">开始新游戏</button>
+            </div>
+        </div>
+        
+        <div class="player-area" id="player2">
+            <div class="player-info">
+                <h2>玩家2</h2>
+                <div>筹码: <span id="player2-chips">1000</span></div>
+                <div>本轮下注: <span id="player2-bet">0</span></div>
+            </div>
+            <div class="cards" id="player2-cards"></div>
+            <div class="bet-controls" id="player2-controls">
+                <button id="fold2">弃牌</button>
+                <button id="check2">过牌</button>
+                <button id="bet2">下注</button>
+                <input type="number" id="bet-amount2" class="bet-amount" min="1" max="1000" value="10">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket;
+        let playerNum = null;
+        let roomId = null;
+
+        function createCardElement(card, faceUp = true) {
+            const cardEl = document.createElement('div');
+            cardEl.className = 'card';
+            if (!faceUp) {
+                cardEl.classList.add('back');
+                return cardEl;
+            }
+            const isRed = card.suit === '♥' || card.suit === '♦';
+            cardEl.innerHTML = `
+                <div class="rank">${card.rank}</div>
+                <div class="suit" style="color: ${isRed ? 'red' : 'black'}">${card.suit}</div>
+                <div class="rank bottom">${card.rank}</div>
+            `;
+            return cardEl;
+        }
+
+        function connectToServer() {
+            const serverUrl = 'http://localhost:3000'; // 根据实际地址修改
+            socket = io(serverUrl);
+
+            socket.on('connect', () => {
+                console.log('已连接到服务器');
+                roomId = prompt('请输入房间号（留空则创建新房间）') || 'room_' + Math.random().toString(36).substr(2, 9);
+                socket.emit('joinRoom', roomId);
+            });
+
+            socket.on('assigned', (data) => {
+                playerNum = data.playerNum;
+                roomId = data.roomId;
+                document.getElementById('status').textContent = `你已加入房间 ${roomId}，你是玩家${playerNum}`;
+            });
+
+            socket.on('gameState', (state) => {
+                updateUIFromState(state);
+            });
+
+            socket.on('error', (msg) => {
+                alert('错误：' + msg);
+            });
+
+            socket.on('playerLeft', (num) => {
+                alert(`玩家${num}离开了游戏`);
+            });
+        }
+
+        function updateUIFromState(state) {
+            console.log('收到游戏状态:', state);
+
+            // 更新自己的手牌
+            const yourCardsEl = document.getElementById(`player${playerNum}-cards`);
+            yourCardsEl.innerHTML = '';
+            state.yourCards.forEach(card => {
+                yourCardsEl.appendChild(createCardElement(card, true));
+            });
+
+            // 更新对手牌
+            const opponentCardsEl = document.getElementById(`player${playerNum === 1 ? 2 : 1}-cards`);
+            opponentCardsEl.innerHTML = '';
+            if (state.opponentCards && state.opponentCards.length > 0) {
+                state.opponentCards.forEach(card => {
+                    opponentCardsEl.appendChild(createCardElement(card, true));
+                });
+            } else {
+                for (let i = 0; i < 2; i++) {
+                    opponentCardsEl.appendChild(createCardElement(null, false));
+                }
+            }
+
+            // 公共牌
+            const communityEl = document.getElementById('community-cards');
+            communityEl.innerHTML = '';
+            state.communityCards.forEach(card => {
+                communityEl.appendChild(createCardElement(card, true));
+            });
+
+            // 筹码和下注
+            document.getElementById('player1-chips').textContent = playerNum === 1 ? state.yourChips : state.opponentChips;
+            document.getElementById('player2-chips').textContent = playerNum === 2 ? state.yourChips : state.opponentChips;
+            document.getElementById('player1-bet').textContent = playerNum === 1 ? state.yourBet : state.opponentBet;
+            document.getElementById('player2-bet').textContent = playerNum === 2 ? state.yourBet : state.opponentBet;
+            document.getElementById('pot').textContent = state.pot;
+
+            // 状态文字
+            const roundMap = {'pre-flop':'翻牌前','flop':'翻牌圈','turn':'转牌圈','river':'河牌圈','showdown':'摊牌'};
+            let statusText = '';
+            if (!state.gameStarted && state.winner !== undefined && state.winner !== null) {
+                if (state.winner === 0) {
+                    statusText = '游戏结束，平局！';
+                } else {
+                    statusText = `游戏结束，玩家${state.winner}胜利！`;
+                }
+            } else {
+                statusText = `当前: ${roundMap[state.round] || state.round}，轮到玩家${state.currentPlayer}行动`;
+            }
+            document.getElementById('status').textContent = statusText;
+
+            // 按钮启用/禁用
+            const gameActive = state.gameStarted === undefined ? true : state.gameStarted;
+            const myTurn = (state.currentPlayer === playerNum) && gameActive;
+
+            document.getElementById('fold1').disabled = !(myTurn && playerNum === 1);
+            document.getElementById('check1').disabled = !(myTurn && playerNum === 1);
+            document.getElementById('bet1').disabled = !(myTurn && playerNum === 1);
+            document.getElementById('fold2').disabled = !(myTurn && playerNum === 2);
+            document.getElementById('check2').disabled = !(myTurn && playerNum === 2);
+            document.getElementById('bet2').disabled = !(myTurn && playerNum === 2);
+        }
+
+        function sendAction(action, amount) {
+            socket.emit('action', { roomId, action, amount });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            connectToServer();
+
+            document.getElementById('fold1').addEventListener('click', () => sendAction('fold'));
+            document.getElementById('check1').addEventListener('click', () => sendAction('check'));
+            document.getElementById('bet1').addEventListener('click', () => {
+                const amount = document.getElementById('bet-amount1').value;
+                sendAction('bet', amount);
+            });
+
+            document.getElementById('fold2').addEventListener('click', () => sendAction('fold'));
+            document.getElementById('check2').addEventListener('click', () => sendAction('check'));
+            document.getElementById('bet2').addEventListener('click', () => {
+                const amount = document.getElementById('bet-amount2').value;
+                sendAction('bet', amount);
+            });
+        });
+    </script>
+</body>
+</html>
